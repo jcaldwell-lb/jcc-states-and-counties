@@ -1,0 +1,86 @@
+name: Sync Proxy Github Action
+
+on:
+  push:
+    branches:
+      - '*-*-dev'
+      - '*-*-release'
+  pull_request:
+    types: [opened]
+    branches:
+      - dev
+      
+
+jobs:
+  automated-api-tests:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    environment: dev
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Postman CLI
+        run: |
+          curl -o- "https://dl-cli.pstmn.io/install/linux64.sh" | sh
+      - name: Login to Postman CLI
+        run: postman login --with-api-key ${{ secrets.POSTMAN_API_KEY }}
+      - name: Run API tests
+        run: |
+          postman collection run ${{ vars.POSTMAN_COLLECTION_ID }} -e ${{ vars.POSTMAN_ENVIRONMENT_ID }}
+
+  sync:
+    needs: automated-api-tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && contains(github.ref_name, 'dev')
+    permissions:
+      # Give the default GITHUB_TOKEN write permission to commit and push the
+      # added or changed files to the repository.
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      # This step is not working becuase the Action does not have access to the repo
+      # Will look into how to fix this using the proper SSH key or a fine-grain access token.
+      #  
+
+      # - name: Checkout code from master deploy repo
+      #   uses: actions/checkout@v2
+      #   with:
+      #     repository: EDRInc/apigee-deploy-scripts
+      #     path: master-deploy
+      #     ref: master
+      #     token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dotenv Action
+        id: import-env
+        uses: falti/dotenv-action@v1.0.2
+
+      - name: Setup node
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node }}
+      
+      - name: Install NPM Packages
+        run: |
+           npm install axios adm-zip
+
+
+      - name: Run the script
+        env:
+          APIGEE_USER: ${{ secrets.APIGEE_USERNAME }}
+          APIGEE_PASSWORD: ${{ secrets.APIGEE_PASSWORD }}
+          APIGEE_ORGANIZATION: 'lightbox-preprod'
+          APIGEE_ENVIRONMENT: 'dev'
+          PROXY_NAME: ${{steps.import-env.outputs.proxy_name}}
+          PROXY_REVISION: ${{steps.import-env.outputs.proxy_revision}}
+        run: node scripts/download-and-commit.js
+
+        
+      - name: Commit changes
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git add .
+          git commit -m "Add API revision"
+          git push

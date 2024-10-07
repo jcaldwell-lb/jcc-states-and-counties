@@ -1,0 +1,169 @@
+name: Deploy Apigee Proxy
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      previousRevision: ${{ steps.deploy-proxy.outputs.previousRevision }}
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v2
+
+    - name: Dotenv Action
+      id: import-env
+      uses: falti/dotenv-action@v1.0.2
+
+    - name: Setup node
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node }}
+    
+    - name: Install NPM Packages
+      run: |
+          npm install axios adm-zip form-data apigee-edge-js @actions/core
+
+    - name: Get Branch Name
+      id: branch-name
+      run: echo "BRANCH_NAME=$(basename $GITHUB_REF)" >> $GITHUB_ENV
+
+    - name: Set Environment Variables
+      run: |
+        echo "APIGEE_USER=${{ secrets.APIGEE_USERNAME }}" >> $GITHUB_ENV
+        echo "APIGEE_PASSWORD=${{ secrets.APIGEE_PASSWORD }}" >> $GITHUB_ENV
+        echo "APIGEE_ORGANIZATION=lightbox-prod" >> $GITHUB_ENV
+        echo "APIGEE_ENVIRONMENT=prod" >> $GITHUB_ENV
+        echo "PROXY_NAME=${{ steps.import-env.outputs.proxy_name }}" >> $GITHUB_ENV
+        echo "PROXY_REVISION=${{ steps.import-env.outputs.proxy_revision }}" >> $GITHUB_ENV
+
+    - name: Deploy
+      id: deploy-proxy  
+      run: node scripts/deploy-to-production.js uploadProxyFilesAndDeploy
+      env:
+        APIGEE_USER: ${{ env.APIGEE_USER }}
+        APIGEE_PASSWORD: ${{ env.APIGEE_PASSWORD }}
+        APIGEE_ORGANIZATION: ${{ env.APIGEE_ORGANIZATION }}
+        APIGEE_ENVIRONMENT: ${{ env.APIGEE_ENVIRONMENT }}
+        PROXY_NAME: ${{ env.PROXY_NAME }}
+        PROXY_REVISION: ${{ env.PROXY_REVISION }}
+        
+
+  automated-api-tests:
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Postman CLI
+        run: |
+          curl -o- "https://dl-cli.pstmn.io/install/linux64.sh" | sh
+      - name: Login to Postman CLI
+        run: postman login --with-api-key ${{ secrets.POSTMAN_API_KEY }}
+      - name: run-tests
+        run: |
+          postman collection run ${{ vars.POSTMAN_COLLECTION_ID }} -e ${{ vars.POSTMAN_ENVIRONMENT_ID }}
+
+  redeployPreviousRevision:
+    needs: [deploy,automated-api-tests]
+    runs-on: ubuntu-latest
+    if: ${{ always() && needs.automated-api-tests.result == 'failure' && (needs.deploy.outputs.previousRevision != 'NA' || needs.deploy.outputs.previousRevision != null)}}
+    steps:
+    - name: Use outputs from previous jobs
+      run: |
+        echo "Using output from deploy: ${{ needs.deploy.outputs.previousRevision }}"
+
+    - name: Checkout Repository
+      uses: actions/checkout@v2
+
+    - name: Dotenv Action
+      id: import-env
+      uses: falti/dotenv-action@v1.0.2
+
+    - name: Setup node
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node }}
+    
+    - name: Install NPM Packages
+      run: |
+          npm install axios adm-zip form-data apigee-edge-js @actions/core
+
+    - name: Get Branch Name
+      id: branch-name
+      run: echo "BRANCH_NAME=$(basename $GITHUB_REF)" >> $GITHUB_ENV
+
+    - name: Set Environment Variables
+      run: |
+        echo "APIGEE_USER=${{ secrets.APIGEE_USERNAME }}" >> $GITHUB_ENV
+        echo "APIGEE_PASSWORD=${{ secrets.APIGEE_PASSWORD }}" >> $GITHUB_ENV
+        if [ "${{ env.BRANCH_NAME }}" == "master" ]; then
+          echo "APIGEE_ORGANIZATION=lightbox-prod" >> $GITHUB_ENV
+          echo "APIGEE_ENVIRONMENT=prod" >> $GITHUB_ENV
+        else
+          echo "APIGEE_ORGANIZATION=lightbox-preprod" >> $GITHUB_ENV
+          echo "APIGEE_ENVIRONMENT=${{ env.BRANCH_NAME }}" >> $GITHUB_ENV
+        fi
+        echo "PROXY_NAME=${{ steps.import-env.outputs.proxy_name }}" >> $GITHUB_ENV
+        
+
+    - name: Redeploy Previous Revision of Apigee Proxy
+      run: node scripts/deploy-to-production.js deployRevision ${{ needs.deploy.outputs.previousRevision }}
+      env:
+        APIGEE_USER: ${{ env.APIGEE_USER }}
+        APIGEE_PASSWORD: ${{ env.APIGEE_PASSWORD }}
+        APIGEE_ORGANIZATION: ${{ env.APIGEE_ORGANIZATION }}
+        APIGEE_ENVIRONMENT: ${{ env.APIGEE_ENVIRONMENT }}
+        PROXY_NAME: ${{ env.PROXY_NAME }}
+
+  undeployProxy:
+    needs: [deploy,automated-api-tests]
+    runs-on: ubuntu-latest
+    if: ${{ always() && needs.automated-api-tests.result == 'failure' && (needs.deploy.outputs.previousRevision == 'NA' || needs.deploy.outputs.previousRevision == null)}}
+    steps:
+    - name: Use outputs from previous jobs
+      run: |
+        echo "Using output from deploy: ${{ needs.deploy.outputs.previousRevision }}"
+
+    - name: Checkout Repository
+      uses: actions/checkout@v2
+
+    - name: Dotenv Action
+      id: import-env
+      uses: falti/dotenv-action@v1.0.2
+
+    - name: Setup node
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node }}
+    
+    - name: Install NPM Packages
+      run: |
+          npm install axios adm-zip form-data apigee-edge-js @actions/core
+
+    - name: Get Branch Name
+      id: branch-name
+      run: echo "BRANCH_NAME=$(basename $GITHUB_REF)" >> $GITHUB_ENV
+
+    - name: Set Environment Variables
+      run: |
+        echo "APIGEE_USER=${{ secrets.APIGEE_USERNAME }}" >> $GITHUB_ENV
+        echo "APIGEE_PASSWORD=${{ secrets.APIGEE_PASSWORD }}" >> $GITHUB_ENV
+        echo "APIGEE_ORGANIZATION=lightbox-prod" >> $GITHUB_ENV
+        echo "APIGEE_ENVIRONMENT=prod" >> $GITHUB_ENV
+        echo "PROXY_NAME=${{ steps.import-env.outputs.proxy_name }}" >> $GITHUB_ENV
+        
+
+    - name: Undeploy Apigee Proxy
+      run: node scripts/deploy-to-production.js undeployProxy
+      env:
+        APIGEE_USER: ${{ env.APIGEE_USER }}
+        APIGEE_PASSWORD: ${{ env.APIGEE_PASSWORD }}
+        APIGEE_ORGANIZATION: ${{ env.APIGEE_ORGANIZATION }}
+        APIGEE_ENVIRONMENT: ${{ env.APIGEE_ENVIRONMENT }}
+        PROXY_NAME: ${{ env.PROXY_NAME }}
